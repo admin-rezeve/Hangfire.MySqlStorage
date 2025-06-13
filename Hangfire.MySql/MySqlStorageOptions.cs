@@ -18,7 +18,7 @@ namespace Hangfire.MySql
             DashboardJobListLimit = 50000;
             TransactionTimeout = TimeSpan.FromMinutes(1);
             InvisibilityTimeout = TimeSpan.FromMinutes(30);
-
+            UseSkipLocked = true;
             TablesPrefix = DefaultTablesPrefix;
         }
 
@@ -57,5 +57,7 @@ namespace Hangfire.MySql
         public TimeSpan InvisibilityTimeout { get; set; }
 
         public string TablesPrefix { get; set; }
+
+        public bool UseSkipLocked { get; set; }
     }
 }

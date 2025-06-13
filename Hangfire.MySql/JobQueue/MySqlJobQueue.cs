@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Threading;
 using Dapper;
+using Hangfire.Common;
 using Hangfire.Logging;
 using Hangfire.Storage;
 using MySqlConnector;
@@ -40,34 +42,46 @@ namespace Hangfire.MySql.JobQueue
                 try
                 {
                     using (new MySqlDistributedLock(_storage, "JobQueue", TimeSpan.FromSeconds(30), _options))
+                    using (var transaction = connection.BeginTransaction())
                     {
                         string token = Guid.NewGuid().ToString();
+                        var parameters = new DynamicParameters();
+                        parameters.Add("fetchToken", token);
+                        parameters.Add("queues", queues);
 
-                        int nUpdated = connection.Execute(
-                            $"update `{_options.TablesPrefix}JobQueue` set FetchedAt = UTC_TIMESTAMP(), FetchToken = @fetchToken " +
-                            "where (FetchedAt is null or FetchedAt < DATE_ADD(UTC_TIMESTAMP(), INTERVAL @timeout SECOND)) " +
-                            "   and Queue in @queues " +
-                            "LIMIT 1;",
-                            new
-                            {
-                                queues = queues,
-                                timeout = _options.InvisibilityTimeout.Negate().TotalSeconds,
-                                fetchToken = token
-                            });
+                        var job = connection.QueryFirstOrDefault<FetchedJob>(
+                           $@"
+                            SELECT Id, JobId, Queue
+                            FROM `{_options.TablesPrefix}JobQueue`
+                            WHERE (FetchedAt IS NULL OR FetchedAt < DATE_ADD(UTC_TIMESTAMP(), INTERVAL -1800 SECOND))
+                              AND Queue IN @queues
+                            ORDER BY Id
+                            LIMIT 1
+                            FOR UPDATE SKIP LOCKED;",
+                           parameters,
+                           transaction: transaction
+                       );
 
-                        if(nUpdated != 0)
+                        if (job != null)
                         {
-                            fetchedJob =
-                                connection
-                                    .Query<FetchedJob>(
-                                        "select Id, JobId, Queue " +
-                                        $"from `{_options.TablesPrefix}JobQueue` " +
-                                        "where FetchToken = @fetchToken;",
-                                        new
-                                        {
-                                            fetchToken = token
-                                        })
-                                    .SingleOrDefault();
+                            connection.Execute(
+                                $@"UPDATE `{_options.TablesPrefix}JobQueue`
+                           SET FetchedAt = UTC_TIMESTAMP(), FetchToken = @fetchToken
+                           WHERE Id = @Id;",
+                                new
+                                {
+                                    Id = job.Id,
+                                    fetchToken = token
+                                },
+                                transaction
+                            );
+
+                            transaction.Commit();
+                            fetchedJob = job;
+                        }
+                        else
+                        {
+                            transaction.Rollback();
                         }
                     }
                 }
