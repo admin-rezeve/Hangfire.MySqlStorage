@@ -46,15 +46,20 @@ namespace Hangfire.MySql.JobQueue
                     {
                         string token = Guid.NewGuid().ToString();
                         var parameters = new DynamicParameters();
+                        var inClause = string.Join(", ", queues.Select((q, i) =>
+                        {
+                            var name = $"@q{i}";
+                            parameters.Add(name, q);
+                            return name;
+                        }));
                         parameters.Add("fetchToken", token);
-                        parameters.Add("queues", queues);
 
                         var job = connection.QueryFirstOrDefault<FetchedJob>(
                            $@"
                             SELECT Id, JobId, Queue
                             FROM `{_options.TablesPrefix}JobQueue`
                             WHERE (FetchedAt IS NULL OR FetchedAt < DATE_ADD(UTC_TIMESTAMP(), INTERVAL -1800 SECOND))
-                              AND Queue IN @queues
+                              AND Queue IN ({inClause})
                             ORDER BY Id
                             LIMIT 1
                             FOR UPDATE SKIP LOCKED;",
@@ -87,7 +92,7 @@ namespace Hangfire.MySql.JobQueue
                 }
                 catch (MySqlException ex)
                 {
-                    //Logger.ErrorException(ex.Message, ex);
+                    Logger.ErrorException(ex.Message, ex);
                     _storage.ReleaseConnection(connection);
                     throw;
                 }
