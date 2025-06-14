@@ -57,7 +57,7 @@ namespace Hangfire.MySql.JobQueue
                         var job = connection.QueryFirstOrDefault<FetchedJob>(
                            $@"
                             SELECT Id, JobId, Queue
-                            FROM `{_options.TablesPrefix}JobQueue`
+                            FROM `{_options.TablesPrefix}JobQueue` FORCE INDEX (IX_HangfireJobQueue_QueueAndFetchedAt)
                             WHERE (FetchedAt IS NULL OR FetchedAt < DATE_ADD(UTC_TIMESTAMP(), INTERVAL -1800 SECOND))
                               AND Queue IN ({inClause})
                             ORDER BY Id
