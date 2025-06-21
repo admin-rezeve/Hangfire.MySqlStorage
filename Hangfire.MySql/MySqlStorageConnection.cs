@@ -63,7 +63,7 @@ namespace Hangfire.MySql
                 {
                     var parameterArray = new object[parameters.Count];
                     int parameterIndex = 0;
-                    foreach (var parameter in parameters)
+                    foreach (var parameter in parameters.Where(x => !string.IsNullOrEmpty(x.Value)).ToList())
                     {
                         parameterArray[parameterIndex++] = new
                         {

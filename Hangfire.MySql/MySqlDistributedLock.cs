@@ -1,8 +1,9 @@
+using Dapper;
+using Hangfire.Logging;
+using StackExchange.Redis;
 using System;
 using System.Data;
 using System.Threading;
-using Dapper;
-using Hangfire.Logging;
 
 namespace Hangfire.MySql
 {
@@ -17,15 +18,41 @@ namespace Hangfire.MySql
         private readonly DateTime _start;
         private readonly CancellationToken _cancellationToken;
 
+        private readonly IDatabase _redisDb;
+        private ConnectionMultiplexer _redis;
+        private readonly string _lockKey;
+        private readonly string _lockValue;
+        private readonly bool _useRedis;
+
         private const int DelayBetweenPasses = 100;
+        
+        private readonly IDbConnection _connection;
 
         public MySqlDistributedLock(MySqlStorage storage, string resource, TimeSpan timeout, MySqlStorageOptions storageOptions)
-            : this(storage.CreateAndOpenConnection(), resource, timeout, storageOptions)
         {
-            _storage = storage;          
-        }
+            _storageOptions = storageOptions;
+            _resource = resource;
+            _timeout = timeout;
+            _cancellationToken = new CancellationToken();
+            _start = DateTime.UtcNow;
+            _storage = storage;
 
-        private readonly IDbConnection _connection;
+            if (_storageOptions.UseRedisDistributedLock && !string.IsNullOrWhiteSpace(_storageOptions.RedisConnectionString))
+            {
+                _connection = null; // Redis doesn't need a SQL connection
+                _useRedis = true;
+
+                _redis = ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                _redisDb = _redis.GetDatabase();
+                _lockKey = $"hangfire:lock:{_resource}";
+                _lockValue = Guid.NewGuid().ToString();
+            }
+            else
+            {
+                _connection = storage.CreateAndOpenConnection();
+                _useRedis = false;
+            }
+        }
 
         public MySqlDistributedLock(IDbConnection connection, string resource, TimeSpan timeout, MySqlStorageOptions storageOptions)
             : this(connection, resource, timeout, storageOptions, new CancellationToken())
@@ -43,6 +70,21 @@ namespace Hangfire.MySql
             _connection = connection;
             _cancellationToken = cancellationToken;
             _start = DateTime.UtcNow;
+
+            if (_storageOptions.UseRedisDistributedLock && !string.IsNullOrWhiteSpace(_storageOptions.RedisConnectionString))
+            {
+                _connection = null; // Redis doesn't need a SQL connection
+                _useRedis = true;
+
+                _redis = ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                _redisDb = _redis.GetDatabase();
+                _lockKey = $"hangfire:lock:{_resource}";
+                _lockValue = Guid.NewGuid().ToString();
+            }
+            else
+            {
+                _useRedis = false;
+            }
         }
 
         public string Resource {
@@ -51,30 +93,55 @@ namespace Hangfire.MySql
 
         private int AcquireLock(string resource, TimeSpan timeout)
         {
-            return
-                _connection
-                    .Execute(
-                        "SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; " +
-                        $"INSERT INTO `{_storageOptions.TablesPrefix}DistributedLock` (Resource, CreatedAt) " +
-                        "  SELECT @resource, @now " +
-                        "  FROM dual " +
-                        "  WHERE NOT EXISTS ( " +
-                        $"  		SELECT * FROM `{_storageOptions.TablesPrefix}DistributedLock` " +
-                        "     	WHERE Resource = @resource " +
-                        "       AND CreatedAt > @expired);", 
-                        new
-                        {
-                            resource,
-                            now = DateTime.UtcNow, 
-                            expired = DateTime.UtcNow.Add(timeout.Negate())
-                        });
+            if (_useRedis)
+            {
+                var start = DateTime.UtcNow;
+                while (true)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+
+                    bool acquired = _redisDb.StringSet(_lockKey, _lockValue, timeout, When.NotExists);
+
+                    if (acquired)
+                    {
+                        return 1;
+                    }
+
+                    if (DateTime.UtcNow - start > timeout)
+                    {
+                        throw new MySqlDistributedLockException($"Could not acquire Redis lock on resource '{resource}' within timeout {timeout}");
+                    }
+
+                    Thread.Sleep(DelayBetweenPasses);
+                }
+            }
+            else
+            {
+                return
+                   _connection
+                       .Execute(
+                           "SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; " +
+                           $"INSERT INTO `{_storageOptions.TablesPrefix}DistributedLock` (Resource, CreatedAt) " +
+                           "  SELECT @resource, @now " +
+                           "  FROM dual " +
+                           "  WHERE NOT EXISTS ( " +
+                           $"  		SELECT * FROM `{_storageOptions.TablesPrefix}DistributedLock` " +
+                           "     	WHERE Resource = @resource " +
+                           "       AND CreatedAt > @expired);",
+                           new
+                           {
+                               resource,
+                               now = DateTime.UtcNow,
+                               expired = DateTime.UtcNow.Add(timeout.Negate())
+                           });
+            }
         }
 
         public void Dispose()
         {
             Release();
 
-            if (_storage != null)
+            if (!_useRedis && _storage != null && _connection != null)
             {
                 _storage.ReleaseConnection(_connection);
             }
@@ -82,7 +149,7 @@ namespace Hangfire.MySql
 
         internal MySqlDistributedLock Acquire()
         {
-            Logger.TraceFormat("Acquire resource={0}, timeout={1}", _resource, _timeout);
+            Logger.TraceFormat("Acquiring {0} lock for resource={1}, timeout={2}", _useRedis ? "Redis" : "MySQL", _resource, _timeout);
 
             int insertedObjectCount;
             do
@@ -112,16 +179,49 @@ namespace Hangfire.MySql
 
         internal void Release()
         {
-            Logger.TraceFormat("Release resource={0}", _resource);
+            Logger.TraceFormat("Releasing {0} lock for resource={1}", _useRedis ? "Redis" : "MySQL", _resource);
 
-            _connection
-                .Execute(
-                    $"DELETE FROM `{_storageOptions.TablesPrefix}DistributedLock`  " +
-                    "WHERE Resource = @resource",
-                    new
+            if (_useRedis)
+            {
+                if (!string.IsNullOrEmpty(_lockKey) && !string.IsNullOrEmpty(_lockValue) && _redisDb != null)
+                {
+                    const string luaScript = @"
+                        if redis.call('get', KEYS[1]) == ARGV[1] then
+                            return redis.call('del', KEYS[1])
+                        else
+                            return 0
+                        end";
+
+                    try
                     {
-                        resource = _resource
-                    });
+                        _redisDb.ScriptEvaluate(luaScript,
+                            new RedisKey[] { _lockKey },
+                            new RedisValue[] { _lockValue });
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.ErrorException($"Failed to release Redis lock for {_lockKey}", ex);
+                    }
+                }
+                else
+                {
+                    Logger.WarnFormat("Redis lock release skipped: lockKey or redisDb not set for resource={0}", _resource);
+                }
+            }
+            else
+            {
+                try
+                {
+                    _connection?.Execute(
+                        $"DELETE FROM `{_storageOptions.TablesPrefix}DistributedLock` " +
+                        "WHERE Resource = @resource",
+                        new { resource = _resource });
+                }
+                catch (Exception ex)
+                {
+                    Logger.ErrorException($"Failed to release MySQL lock for {_resource}", ex);
+                }
+            }
         }
 
         public int CompareTo(object obj)

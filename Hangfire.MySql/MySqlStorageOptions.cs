@@ -20,6 +20,9 @@ namespace Hangfire.MySql
             InvisibilityTimeout = TimeSpan.FromMinutes(30);
             UseSkipLocked = true;
             TablesPrefix = DefaultTablesPrefix;
+            RedisLockTimeout = TimeSpan.FromSeconds(30);
+            UseRedisDistributedLock = false;
+            DisableExpirationManager = false;
         }
 
         public System.Transactions.IsolationLevel? TransactionIsolationLevel { get; set; }
@@ -59,5 +62,10 @@ namespace Hangfire.MySql
         public string TablesPrefix { get; set; }
 
         public bool UseSkipLocked { get; set; }
+
+        public string RedisConnectionString { get; set; }
+        public TimeSpan RedisLockTimeout { get; set; }
+        public bool UseRedisDistributedLock { get; set; }
+        public bool DisableExpirationManager { get; set; }
     }
 }

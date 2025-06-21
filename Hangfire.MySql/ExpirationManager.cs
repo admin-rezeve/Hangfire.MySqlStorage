@@ -29,9 +29,9 @@ namespace Hangfire.MySql
             _processedTables = new[]
             {
                 $"{storageOptions.TablesPrefix}AggregatedCounter",
-                $"{storageOptions.TablesPrefix}Job",
+                //$"{storageOptions.TablesPrefix}Job",
                 $"{storageOptions.TablesPrefix}List",
-                $"{storageOptions.TablesPrefix}Set",
+                //$"{storageOptions.TablesPrefix}Set",
                 $"{storageOptions.TablesPrefix}Hash",
             };
         }
