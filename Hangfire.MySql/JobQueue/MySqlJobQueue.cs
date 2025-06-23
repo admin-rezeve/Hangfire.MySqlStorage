@@ -72,8 +72,6 @@ namespace Hangfire.MySql.JobQueue
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                
-                connection = _storage.CreateAndOpenConnection();
 
                 foreach (var redisQueue in redisQueues)
                 {
@@ -108,6 +106,7 @@ namespace Hangfire.MySql.JobQueue
                             FetchedAt = DateTime.UtcNow
                         };
 
+                        connection = _storage.CreateAndOpenConnection();
                         return new MySqlFetchedJob(_storage, connection, _redisDb, fetchedJob, _options);
                     }
                 }
