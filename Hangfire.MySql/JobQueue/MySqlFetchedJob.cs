@@ -1,6 +1,7 @@
 ﻿using Dapper;
 using Hangfire.Common;
 using Hangfire.Logging;
+using Hangfire.States;
 using Hangfire.Storage;
 using StackExchange.Redis;
 using System;
@@ -83,12 +84,22 @@ namespace Hangfire.MySql.JobQueue
             Logger.TraceFormat("RemoveFromQueue {0} JobId={1}", _useRedis ? "Redis" : "MySql", JobId);
             if (_useRedis)
             {
+                var jobState = _connection.QueryFirstOrDefault<string>(
+                $"select StateName from `{_storageOptions.TablesPrefix}Job` where Id = @jobId",
+                new { jobId = JobId });
+
+                if (jobState == "Enqueued")
+                {
+                    Logger.WarnFormat("Skipping Redis removal. JobId={0} still in Enqueued state.", JobId);
+                    return;
+                }
+
                 var fetchedAt = GetFetchedValue();
                 if (_storage.UseRedisTransactions)
                 {
                     var transaction = _redisDb.CreateTransaction();
 
-                    if (fetchedAt.Value.ToString("yyyy-MM-dd HH:mm:ss") == FetchedAt.Value.ToString("yyyy-MM-dd HH:mm:ss"))
+                    if (fetchedAt?.ToString("s") == FetchedAt?.ToString("s"))
                     {
                         RemoveFromFetchedListAsync(transaction);
                     }
@@ -97,7 +108,7 @@ namespace Hangfire.MySql.JobQueue
                 }
                 else
                 {
-                    if (fetchedAt.Value.ToString("yyyy-MM-dd HH:mm:ss") == FetchedAt.Value.ToString("yyyy-MM-dd HH:mm:ss"))
+                    if (fetchedAt?.ToString("s") == FetchedAt?.ToString("s"))
                     {
                         RemoveFromFetchedList(_redisDb);
                     }
@@ -130,9 +141,10 @@ namespace Hangfire.MySql.JobQueue
                 {
                     var transaction = _redisDb.CreateTransaction();
                     transaction.ListRightPushAsync(_storage.GetRedisKey($"queue:{Queue}"), JobId);
-                    if (fetchedAt == FetchedAt)
+
+                    if (fetchedAt?.ToString("s") == FetchedAt?.ToString("s"))
                     {
-                        RemoveFromFetchedListAsync(transaction);
+                        RemoveFromFetchedList(_redisDb);
                     }
 
                     transaction.PublishAsync(_storage.SubscriptionChannel, JobId);
@@ -141,13 +153,20 @@ namespace Hangfire.MySql.JobQueue
                 else
                 {
                     _redisDb.ListRightPush(_storage.GetRedisKey($"queue:{Queue}"), JobId);
-                    if (fetchedAt == FetchedAt)
+                    if (fetchedAt?.ToString("s") == FetchedAt?.ToString("s"))
                     {
                         RemoveFromFetchedList(_redisDb);
                     }
 
                     _redisDb.Publish(_storage.SubscriptionChannel, JobId);
                 }
+
+                //using (var connection = _storage.CreateAndOpenConnection())
+                //{
+                //    var transaction = new MySqlWriteOnlyTransaction(_storage, _storageOptions);
+                //    transaction.AddJobState(JobId, new EnqueuedState(Queue));
+                //    transaction.Commit();
+                //}
             }
             else
             {

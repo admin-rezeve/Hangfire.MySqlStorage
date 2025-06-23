@@ -1,6 +1,7 @@
 ﻿using Dapper;
 using Hangfire.Common;
 using Hangfire.Logging;
+using Hangfire.States;
 using Hangfire.Storage;
 using MySqlConnector;
 using StackExchange.Redis;
@@ -11,6 +12,7 @@ using System.Data;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using static Hangfire.Storage.JobStorageFeatures;
 
 namespace Hangfire.MySql.JobQueue
 {
@@ -63,10 +65,15 @@ namespace Hangfire.MySql.JobQueue
 
             if (redisQueues.Length == 0)
                 throw new ArgumentException("No Redis queues to dequeue from.");
+            
+            FetchedJob fetchedJob = null;
+            MySqlConnection connection = null;
 
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                
+                connection = _storage.CreateAndOpenConnection();
 
                 foreach (var redisQueue in redisQueues)
                 {
@@ -90,21 +97,20 @@ namespace Hangfire.MySql.JobQueue
                         _redisDb.ListRightPush(_storage.GetRedisKey($"queue:{queue}:dequeued"), jobIdStr);
                         _redisDb.HashSet(_storage.GetRedisKey($"job:{jobIdStr}"), new HashEntry[]
                         {
-                    new("Fetched", DateTime.UtcNow.ToString("o")),
-                    new("Checked", DateTime.UtcNow.ToString("o"))
+                        new("Fetched", DateTime.UtcNow.ToString("o")),
+                        new("Checked", DateTime.UtcNow.ToString("o"))
                         });
 
-                        var fetchedJob = new FetchedJob()
+                        fetchedJob = new FetchedJob()
                         {
                             JobId = int.Parse(jobIdStr),
                             Queue = queue,
                             FetchedAt = DateTime.UtcNow
                         };
 
-                        return new MySqlFetchedJob(_storage, null, _redisDb, fetchedJob, _options);
+                        return new MySqlFetchedJob(_storage, connection, _redisDb, fetchedJob, _options);
                     }
                 }
-
                 // Wait with cancellation support
                 cancellationToken.WaitHandle.WaitOne(_options.QueuePollInterval);
             }

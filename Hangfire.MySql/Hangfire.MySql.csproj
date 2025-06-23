@@ -6,14 +6,15 @@
         <PackageId>Hangfire.MySqlStorage.Rezerv</PackageId>
         <Product>Hangfire MySql Storage by Arnoldas Gudas</Product>
         <Company />
-		<Version>1.0.0.8-pre</Version>
+		<Version>1.0.0.9-pre</Version>
         <Authors>Thet Zaw Win</Authors>
         <PackageLicenseUrl>https://github.com/arnoldasgudas/Hangfire.MySqlStorage/blob/master/License.md</PackageLicenseUrl>
         <PackageProjectUrl>https://github.com/arnoldasgudas/Hangfire.MySqlStorage</PackageProjectUrl>
         <Copyright>Copyright 2015</Copyright>
         <PackageTags>Hangfire MySql Hangfire.MySql Hangfire Redis Hybrid</PackageTags>
 		<PackageReleaseNotes>
-			
+			Redis Dequeue to check if job is already running in Mysql Storage, if not then enqueue to Redis Storage. 
+			This is experimental and not recommended for production use.
 		</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
