@@ -7,12 +7,13 @@ using StackExchange.Redis;
 namespace Hangfire.MySql.Redis
 {
 #pragma warning disable 618
-    internal class RedisSubscription : IServerComponent
+    internal class RedisSubscription : IServerComponent, IDisposable
 #pragma warning restore 618
     {
         private readonly ManualResetEvent _mre = new ManualResetEvent(false);
         private readonly MySqlStorage _storage;
         private readonly ISubscriber _subscriber;
+        private bool _disposed;
 
         public RedisSubscription([NotNull] MySqlStorage storage, [NotNull] ISubscriber subscriber)
         {
@@ -32,7 +33,7 @@ namespace Hangfire.MySql.Redis
 
         void IServerComponent.Execute(CancellationToken cancellationToken)
         {
-            _subscriber.Subscribe(Channel, (channel, value) => _mre.Set());
+            _subscriber.Subscribe(Channel, (channel, value) => { if (!_disposed) _mre.Set(); });
             cancellationToken.WaitHandle.WaitOne();
 
             if (cancellationToken.IsCancellationRequested)
@@ -40,6 +41,23 @@ namespace Hangfire.MySql.Redis
                 _subscriber.Unsubscribe(Channel);
                 _mre.Reset();
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            try
+            {
+                _subscriber.Unsubscribe(Channel);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Redis unsubscribe error: {ex.Message}");
+            }
+
+            _mre.Dispose();
+            _disposed = true;
         }
 
         ~RedisSubscription()

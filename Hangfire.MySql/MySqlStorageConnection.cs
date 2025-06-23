@@ -106,15 +106,16 @@ namespace Hangfire.MySql
         {
             if (id == null) throw new ArgumentNullException("id");
             if (name == null) throw new ArgumentNullException("name");
-
-            _storage.UseConnection(connection =>
-            {
-                connection.Execute(
-                    $"insert into `{_storageOptions.TablesPrefix}JobParameter` (JobId, Name, Value) " +
-                    "value (@jobId, @name, @value) " +
-                    "on duplicate key update Value = @value ",
-                    new { jobId = id, name, value });
-            });
+            if(!string.IsNullOrEmpty(value)) {
+                _storage.UseConnection(connection =>
+                {
+                    connection.Execute(
+                        $"insert into `{_storageOptions.TablesPrefix}JobParameter` (JobId, Name, Value) " +
+                        "value (@jobId, @name, @value) " +
+                        "on duplicate key update Value = @value ",
+                        new { jobId = id, name, value });
+                });
+            }
         }
 
         public override string GetJobParameter(string id, string name)

@@ -29,7 +29,7 @@ namespace Hangfire.MySql
         private readonly Lazy<ConnectionMultiplexer> _lazyRedisConnection;
         private readonly IDatabase _redisDb;
         private readonly RedisSubscription _subscription;
-
+        private bool _ownsRedisConnection = false;
         public virtual PersistentJobQueueProviderCollection QueueProviders { get; private set; }
 
         public MySqlStorage(string connectionString, MySqlStorageOptions storageOptions)
@@ -62,6 +62,7 @@ namespace Hangfire.MySql
             {
                 _lazyRedisConnection = new Lazy<ConnectionMultiplexer>(() =>
                 {
+                    _ownsRedisConnection = true;
                     return ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
                 });
                 _subscription = new RedisSubscription(this, _lazyRedisConnection.Value.GetSubscriber());
@@ -176,12 +177,12 @@ namespace Hangfire.MySql
 
         public ConnectionMultiplexer GetRedisConnection()
         {
-            if(_lazyRedisConnection is null || !_lazyRedisConnection.IsValueCreated)
+            if (_lazyRedisConnection?.IsValueCreated == true)
             {
-                return ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                return _lazyRedisConnection.Value;
             }
 
-            return _lazyRedisConnection.Value;
+            throw new InvalidOperationException("Redis connection has not been initialized.");
         }
 
         private bool IsConnectionString(string nameOrConnectionString)
@@ -281,7 +282,17 @@ namespace Hangfire.MySql
 
         public void Dispose()
         {
+            Logger.Debug("Disposing MySqlStorage...");
 
+            _subscription?.Dispose();
+
+            if (_ownsRedisConnection && _lazyRedisConnection?.IsValueCreated == true)
+            {
+                Logger.Debug("Disposing internal Redis connection.");
+                _lazyRedisConnection.Value.Dispose();
+            }
+
+            Logger.Debug("MySqlStorage disposed.");
         }
 
         public string GetRedisKey(string key)

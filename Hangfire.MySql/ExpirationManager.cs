@@ -71,11 +71,11 @@ namespace Hangfire.MySql
                                     var totalCount = connection.ExecuteScalar<long>(
                                         $"SELECT count(*) FROM `{table}` WHERE ExpireAt IS NOT NULL AND ExpireAt < @now",
                                         new { now = DateTime.UtcNow, count = NumberOfRecordsInSinglePass });
-                                    if(totalCount > 0)
+                                    if (totalCount > 0)
                                     {
                                         Logger.DebugFormat("Found {0} outdated records in '{1}' table.", totalCount, table);
                                         removedCount = connection.Execute(
-                                        $"DELETE FROM `{table}` WHERE ExpireAt IS NOT NULL AND ExpireAt < @now LIMIT @count",
+                                        $"DELETE FROM `{table}` WHERE ExpireAt < @now LIMIT @count",
                                         new { now = DateTime.UtcNow, count = NumberOfRecordsInSinglePass });
                                     }
                                 }
