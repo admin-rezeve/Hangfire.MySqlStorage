@@ -19,7 +19,13 @@ namespace Hangfire.MySql.Tests
         [Fact]
         public void Set_QueuePollInterval_ShouldThrowAnException_WhenGivenIntervalIsEqualToZero()
         {
-            var options = new MySqlStorageOptions();
+            var options = new MySqlStorageOptions
+            {
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true,
+                UseRedisTransactions = true
+            };
             Assert.Throws<ArgumentException>(
                 () => options.QueuePollInterval = TimeSpan.Zero);
         }
@@ -27,7 +33,13 @@ namespace Hangfire.MySql.Tests
         [Fact]
         public void Set_QueuePollInterval_ShouldThrowAnException_WhenGivenIntervalIsNegative()
         {
-            var options = new MySqlStorageOptions();
+            var options = new MySqlStorageOptions
+            {
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true,
+                UseRedisTransactions = true
+            };
             Assert.Throws<ArgumentException>(
                 () => options.QueuePollInterval = TimeSpan.FromSeconds(-1));
         }
@@ -35,7 +47,13 @@ namespace Hangfire.MySql.Tests
         [Fact]
         public void Set_QueuePollInterval_SetsTheValue()
         {
-            var options = new MySqlStorageOptions();
+            var options = new MySqlStorageOptions
+            {
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true,
+                UseRedisTransactions = true
+            };
             options.QueuePollInterval = TimeSpan.FromSeconds(1);
             Assert.Equal(TimeSpan.FromSeconds(1), options.QueuePollInterval);
         }

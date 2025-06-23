@@ -1,15 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using Dapper;
+﻿using Dapper;
 using Hangfire.Common;
 using Hangfire.MySql.JobQueue;
 using Hangfire.Server;
 using Hangfire.Storage;
 using Moq;
 using MySqlConnector;
+using StackExchange.Redis;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using Xunit;
+using static System.Collections.Specialized.BitVector32;
 
 namespace Hangfire.MySql.Tests
 {
@@ -33,7 +35,13 @@ namespace Hangfire.MySql.Tests
         public void Ctor_ThrowsAnException_WhenStorageIsNull()
         {
             var exception = Assert.Throws<ArgumentNullException>(
-                () => new MySqlStorageConnection(null, new MySqlStorageOptions()));
+                () => new MySqlStorageConnection(null, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                }));
 
             Assert.Equal("storage", exception.ParamName);
         }
@@ -1354,9 +1362,22 @@ values (@key, @value, @expireAt, 0.0)";
         private void UseConnections(Action<MySqlConnection, MySqlStorageConnection> action)
         {
             using (var sqlConnection = ConnectionUtils.CreateConnection())
+            using (var redis = ConnectionUtils.CreateRedisConnection())
             {
-                var storage = new MySqlStorage(sqlConnection, new MySqlStorageOptions());
-                using (var connection = new MySqlStorageConnection(storage, new MySqlStorageOptions()))
+                var storage = new MySqlStorage(sqlConnection, redis, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                });
+                using (var connection = new MySqlStorageConnection(storage, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                }))
                 {
                     action(sqlConnection, connection);
                 }
@@ -1366,11 +1387,24 @@ values (@key, @value, @expireAt, 0.0)";
         private void UseConnection(Action<MySqlStorageConnection> action)
         {
             using (var sql = ConnectionUtils.CreateConnection())
+            using (var redis = ConnectionUtils.CreateRedisConnection())
             {
-                var storage = new Mock<MySqlStorage>(sql, new MySqlStorageOptions());
+                var storage = new Mock<MySqlStorage>(sql, redis, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                });
                 storage.Setup(x => x.QueueProviders).Returns(_providers);
 
-                using (var connection = new MySqlStorageConnection(storage.Object, new MySqlStorageOptions()))
+                using (var connection = new MySqlStorageConnection(storage.Object, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                }))
                 {
                     action(connection);
                 }

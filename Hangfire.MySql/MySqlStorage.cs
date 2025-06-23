@@ -1,16 +1,18 @@
-﻿using System;
+﻿using Hangfire.Annotations;
+using Hangfire.Logging;
+using Hangfire.MySql.JobQueue;
+using Hangfire.MySql.Monitoring;
+using Hangfire.MySql.Redis;
+using Hangfire.Server;
+using Hangfire.Storage;
+using MySqlConnector;
+using StackExchange.Redis;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Text;
 using System.Transactions;
-using Hangfire.Annotations;
-using Hangfire.Logging;
-using Hangfire.MySql.JobQueue;
-using Hangfire.MySql.Monitoring;
-using Hangfire.Server;
-using Hangfire.Storage;
-using MySqlConnector;
 using IsolationLevel = System.Transactions.IsolationLevel;
 
 namespace Hangfire.MySql
@@ -21,7 +23,12 @@ namespace Hangfire.MySql
 
         private readonly string _connectionString;
         private readonly MySqlConnection _existingConnection;
+        private readonly ConnectionMultiplexer _existingRedisConnection;
         private readonly MySqlStorageOptions _storageOptions;
+        
+        private readonly Lazy<ConnectionMultiplexer> _lazyRedisConnection;
+        private readonly IDatabase _redisDb;
+        private readonly RedisSubscription _subscription;
 
         public virtual PersistentJobQueueProviderCollection QueueProviders { get; private set; }
 
@@ -51,15 +58,35 @@ namespace Hangfire.MySql
                 }
             }
 
+            if(_storageOptions.UseRedisDistributedLock && !string.IsNullOrEmpty(_storageOptions.RedisConnectionString))
+            {
+                _lazyRedisConnection = new Lazy<ConnectionMultiplexer>(() =>
+                {
+                    return ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                });
+                _subscription = new RedisSubscription(this, _lazyRedisConnection.Value.GetSubscriber());
+                _redisDb = _lazyRedisConnection.Value.GetDatabase();
+                
+            }
+
             InitializeQueueProviders();
         }
 
-        public MySqlStorage(MySqlConnection existingConnection, MySqlStorageOptions storageOptions)
+        public MySqlStorage(MySqlConnection existingConnection, ConnectionMultiplexer existingRedisConnection, MySqlStorageOptions storageOptions)
         {
             if (existingConnection == null) throw new ArgumentNullException("existingConnection");
 
             _existingConnection = existingConnection;
             _storageOptions = storageOptions;
+
+            if (_storageOptions.UseRedisDistributedLock && !string.IsNullOrEmpty(_storageOptions.RedisConnectionString))
+            {
+                _lazyRedisConnection = new Lazy<ConnectionMultiplexer>(() =>
+                {
+                    return existingRedisConnection;
+                });
+                _subscription = new RedisSubscription(this, _lazyRedisConnection.Value.GetSubscriber());
+            }
 
             InitializeQueueProviders();
         }
@@ -145,6 +172,16 @@ namespace Hangfire.MySql
         public override IStorageConnection GetConnection()
         {
             return new MySqlStorageConnection(this, _storageOptions);
+        }
+
+        public ConnectionMultiplexer GetRedisConnection()
+        {
+            if(_lazyRedisConnection is null || !_lazyRedisConnection.IsValueCreated)
+            {
+                return ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+            }
+
+            return _lazyRedisConnection.Value;
         }
 
         private bool IsConnectionString(string nameOrConnectionString)
@@ -233,8 +270,29 @@ namespace Hangfire.MySql
                 connection.Dispose();
             }
         }
+
+        internal void ReleaseRedisConnection(ConnectionMultiplexer connection)
+        {
+            if (connection != null && !ReferenceEquals(connection, _existingRedisConnection))
+            {
+                connection.Dispose();
+            }
+        }
+
         public void Dispose()
         {
+
         }
+
+        public string GetRedisKey(string key)
+        {
+            return _storageOptions.UseRedisDistributedLock ? $"{_storageOptions.RedisPrefix}:{key}" : string.Empty ;
+        }
+
+        internal RedisChannel SubscriptionChannel => _subscription.Channel;
+
+        internal bool UseRedisTransactions => _storageOptions.UseRedisTransactions;
+        internal string[] LifoRedisQueues => _storageOptions.LifoRedisQueues;
+
     }
 }

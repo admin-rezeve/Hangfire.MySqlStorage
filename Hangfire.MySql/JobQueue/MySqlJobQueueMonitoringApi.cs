@@ -1,12 +1,16 @@
+using Dapper;
+using Hangfire.Logging;
+using Microsoft.Extensions.Logging;
+using StackExchange.Redis;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Dapper;
 
 namespace Hangfire.MySql.JobQueue
 {
     internal class MySqlJobQueueMonitoringApi : IPersistentJobQueueMonitoringApi
     {
+        private static readonly ILog Logger = LogProvider.GetLogger(typeof(MySqlJobQueueMonitoringApi));
         private static readonly TimeSpan QueuesCacheTimeout = TimeSpan.FromSeconds(5);
         private readonly object _cacheLock = new object();
         private List<string> _queuesCache = new List<string>();
@@ -15,11 +19,22 @@ namespace Hangfire.MySql.JobQueue
         private readonly MySqlStorage _storage;
         private readonly MySqlStorageOptions _storageOptions;
 
+        // redis
+        private readonly bool _useRedis;
+        private readonly IDatabase _redisDb;
+        private readonly ConnectionMultiplexer _redis;
+
         public MySqlJobQueueMonitoringApi(MySqlStorage storage, MySqlStorageOptions storageOptions)
         {
             if (storage == null) throw new ArgumentNullException("storage");
             _storage = storage;
             _storageOptions = storageOptions;
+            if (_storageOptions.UseRedisDistributedLock && !string.IsNullOrEmpty(_storageOptions.RedisConnectionString))
+            {
+                _useRedis = true;
+                _redis = _storage.GetRedisConnection();
+                _redisDb = _redis.GetDatabase();
+            }
         }
 
         public IEnumerable<string> GetQueues()
@@ -28,12 +43,20 @@ namespace Hangfire.MySql.JobQueue
             {
                 if (_queuesCache.Count == 0 || _cacheUpdated.Add(QueuesCacheTimeout) < DateTime.UtcNow)
                 {
-                    var result = _storage.UseConnection(connection =>
+                    if (_useRedis)
                     {
-                        return connection.Query($"select distinct(Queue) from `{_storageOptions.TablesPrefix}JobQueue`").Select(x => (string)x.Queue).ToList();
-                    });
-
-                    _queuesCache = result;
+                        var redisDb = _storage.GetRedisConnection().GetDatabase();
+                        var redisQueues = redisDb.SetMembers(_storage.GetRedisKey("queues"))
+                            .Select(q => (string)q).ToList();
+                        _queuesCache = redisQueues;
+                    }
+                    else {
+                        var result = _storage.UseConnection(connection =>
+                        {
+                            return connection.Query($"select distinct(Queue) from `{_storageOptions.TablesPrefix}JobQueue`").Select(x => (string)x.Queue).ToList();
+                        });
+                        _queuesCache = result;
+                    }
                     _cacheUpdated = DateTime.UtcNow;
                 }
 
@@ -43,6 +66,14 @@ namespace Hangfire.MySql.JobQueue
 
         public IEnumerable<int> GetEnqueuedJobIds(string queue, int @from, int perPage)
         {
+            if (_useRedis)
+            {
+                var redisDb = _storage.GetRedisConnection().GetDatabase();
+                var redisList = _storage.GetRedisKey($"queue:{queue}");
+                var jobIds = redisDb.ListRange(redisList, from, from + perPage - 1);
+                return jobIds.Select(j => int.TryParse(j.ToString(), out var id) ? id : 0).Where(id => id > 0);
+            }
+
             string sqlQuery = $@"
 SET @rank=0;
 select r.JobId from (
@@ -66,6 +97,17 @@ where r.rank between @start and @end;";
 
         public EnqueuedAndFetchedCountDto GetEnqueuedAndFetchedCount(string queue)
         {
+            if (_useRedis)
+            {
+                var redisDb = _storage.GetRedisConnection().GetDatabase();
+                var count = redisDb.ListLength(_storage.GetRedisKey($"queue:{queue}"));
+                Logger.DebugFormat("Redis queue length for {0}: {1}", queue, count);
+                return new EnqueuedAndFetchedCountDto
+                {
+                    EnqueuedCount = (int)count,
+                };
+            }
+
             return _storage.UseConnection(connection =>
             {
                 var result = 

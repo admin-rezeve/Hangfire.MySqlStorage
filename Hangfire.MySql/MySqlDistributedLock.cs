@@ -1,8 +1,15 @@
 using Dapper;
 using Hangfire.Logging;
+using Hangfire.MySql.Redis;
+using Hangfire.Server;
+using Hangfire.States;
+using Hangfire.Storage;
+using Pipelines.Sockets.Unofficial.Buffers;
 using StackExchange.Redis;
 using System;
+using System.Collections.Concurrent;
 using System.Data;
+using System.Diagnostics;
 using System.Threading;
 
 namespace Hangfire.MySql
@@ -17,16 +24,17 @@ namespace Hangfire.MySql
         private readonly MySqlStorageOptions _storageOptions;
         private readonly DateTime _start;
         private readonly CancellationToken _cancellationToken;
+        private const int DelayBetweenPasses = 100;
+        
+        private readonly IDbConnection _connection;
 
+        // Redis Variables
         private readonly IDatabase _redisDb;
         private ConnectionMultiplexer _redis;
         private readonly string _lockKey;
         private readonly string _lockValue;
         private readonly bool _useRedis;
 
-        private const int DelayBetweenPasses = 100;
-        
-        private readonly IDbConnection _connection;
 
         public MySqlDistributedLock(MySqlStorage storage, string resource, TimeSpan timeout, MySqlStorageOptions storageOptions)
         {
@@ -42,10 +50,11 @@ namespace Hangfire.MySql
                 _connection = null; // Redis doesn't need a SQL connection
                 _useRedis = true;
 
-                _redis = ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                _redis = _storage.GetRedisConnection();
                 _redisDb = _redis.GetDatabase();
-                _lockKey = $"hangfire:lock:{_resource}";
-                _lockValue = Guid.NewGuid().ToString();
+                _lockKey = _storage.GetRedisKey(_resource);
+                _lockValue = DateTime.UtcNow.ToString();
+
             }
             else
             {
@@ -60,7 +69,7 @@ namespace Hangfire.MySql
         }
 
         public MySqlDistributedLock(
-            IDbConnection connection, string resource, TimeSpan timeout, MySqlStorageOptions storageOptions, CancellationToken cancellationToken)
+            IDbConnection connection, string resource, TimeSpan timeout,  MySqlStorageOptions storageOptions, CancellationToken cancellationToken)
         {
             Logger.TraceFormat("MySqlDistributedLock resource={0}, timeout={1}", resource, timeout);
 
@@ -76,9 +85,9 @@ namespace Hangfire.MySql
                 _connection = null; // Redis doesn't need a SQL connection
                 _useRedis = true;
 
-                _redis = ConnectionMultiplexer.Connect(_storageOptions.RedisConnectionString);
+                _redis = _storage.GetRedisConnection();
                 _redisDb = _redis.GetDatabase();
-                _lockKey = $"hangfire:lock:{_resource}";
+                _lockKey = _storage.GetRedisKey(_resource);
                 _lockValue = Guid.NewGuid().ToString();
             }
             else
@@ -95,6 +104,11 @@ namespace Hangfire.MySql
         {
             if (_useRedis)
             {
+                if (_redisDb == null)
+                {
+                    throw new ArgumentNullException(nameof(_redisDb));
+                }
+
                 var start = DateTime.UtcNow;
                 while (true)
                 {
@@ -222,7 +236,9 @@ namespace Hangfire.MySql
                     Logger.ErrorException($"Failed to release MySQL lock for {_resource}", ex);
                 }
             }
+
         }
+
 
         public int CompareTo(object obj)
         {

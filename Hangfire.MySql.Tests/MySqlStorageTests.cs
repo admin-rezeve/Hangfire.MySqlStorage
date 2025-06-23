@@ -11,14 +11,27 @@ namespace Hangfire.MySql.Tests
 
         public MySqlStorageTests()
         {
-            _options = new MySqlStorageOptions { PrepareSchemaIfNecessary = false };
+            _options = new MySqlStorageOptions
+            {
+                PrepareSchemaIfNecessary = false,
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true,
+                UseRedisTransactions = true
+            };
         }
 
         [Fact]
         public void Ctor_ThrowsAnException_WhenConnectionStringIsNull()
         {
             var exception = Assert.Throws<ArgumentNullException>(
-                () => new MySqlStorage((string)null, new MySqlStorageOptions()));
+                () => new MySqlStorage((string)null, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                }));
 
             Assert.Equal("connectionString", exception.ParamName);
         }
@@ -36,8 +49,9 @@ namespace Hangfire.MySql.Tests
         public void Ctor_CanCreateSqlServerStorage_WithExistingConnection()
         {
             using (var connection = ConnectionUtils.CreateConnection())
+            using (var redis = ConnectionUtils.CreateRedisConnection())
             {
-                var storage = new MySqlStorage(connection, _options);
+                var storage = new MySqlStorage(connection, redis, _options);
 
                 Assert.NotNull(storage);
             }

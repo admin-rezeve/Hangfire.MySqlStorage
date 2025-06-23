@@ -8,6 +8,7 @@ using Hangfire.States;
 using Moq;
 using MySqlConnector;
 using Xunit;
+using StackExchange.Redis;
 
 namespace Hangfire.MySql.Tests
 {
@@ -28,7 +29,13 @@ namespace Hangfire.MySql.Tests
         public void Ctor_ThrowsAnException_IfStorageIsNull()
         {
             var exception = Assert.Throws<ArgumentNullException>(
-                () => new MySqlWriteOnlyTransaction(null, new MySqlStorageOptions()));
+                () => new MySqlWriteOnlyTransaction(null, new MySqlStorageOptions
+                {
+                    RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                    RedisPrefix = "test:hangfire",
+                    UseRedisDistributedLock = true,
+                    UseRedisTransactions = true
+                }));
 
             Assert.Equal("storage", exception.ParamName);
         }
@@ -43,10 +50,11 @@ select last_insert_id() as Id";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var jobId = sql.Query(arrangeSql).Single().Id.ToString();
                 var anotherJobId = sql.Query(arrangeSql).Single().Id.ToString();
 
-                Commit(sql, x => x.ExpireJob(jobId, TimeSpan.FromDays(1)));
+                Commit(sql, redis, x => x.ExpireJob(jobId, TimeSpan.FromDays(1)));
 
                 var job = GetTestJob(sql, jobId);
                 Assert.True(DateTime.UtcNow.AddMinutes(-1) < job.ExpireAt && job.ExpireAt <= DateTime.UtcNow.AddDays(1));
@@ -66,10 +74,11 @@ select last_insert_id() as Id";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var jobId = sql.Query(arrangeSql).Single().Id.ToString();
                 var anotherJobId = sql.Query(arrangeSql).Single().Id.ToString();
 
-                Commit(sql, x => x.PersistJob(jobId));
+                Commit(sql, redis, x => x.PersistJob(jobId));
 
                 var job = GetTestJob(sql, jobId);
                 Assert.Null(job.ExpireAt);
@@ -89,6 +98,7 @@ select last_insert_id() as Id";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var jobId = sql.Query(arrangeSql).Single().Id.ToString();
                 var anotherJobId = sql.Query(arrangeSql).Single().Id.ToString();
 
@@ -98,7 +108,7 @@ select last_insert_id() as Id";
                 state.Setup(x => x.SerializeData())
                     .Returns(new Dictionary<string, string> { { "Name", "Value" } });
 
-                Commit(sql, x => x.SetJobState(jobId, state.Object));
+                Commit(sql, redis, x => x.SetJobState(jobId, state.Object));
 
                 var job = GetTestJob(sql, jobId);
                 Assert.Equal("State", job.StateName);
@@ -127,6 +137,8 @@ select last_insert_id() as Id";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
+
                 var jobId = sql.Query(arrangeSql).Single().Id.ToString();
 
                 var state = new Mock<IState>();
@@ -135,7 +147,7 @@ select last_insert_id() as Id";
                 state.Setup(x => x.SerializeData())
                     .Returns(new Dictionary<string, string> { { "Name", "Value" } });
 
-                Commit(sql, x => x.AddJobState(jobId, state.Object));
+                Commit(sql, redis, x => x.AddJobState(jobId, state.Object));
 
                 var job = GetTestJob(sql, jobId);
                 Assert.Null(job.StateName);
@@ -162,7 +174,8 @@ select last_insert_id() as Id";
 
             UseConnection(sql =>
             {
-                Commit(sql, x => x.AddToQueue("default", "1"));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.AddToQueue("default", "1"));
 
                 correctJobQueue.Verify(x => x.Enqueue(It.IsNotNull<IDbConnection>(), "default", "1"));
             });
@@ -180,7 +193,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.IncrementCounter("my-key"));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis,x => x.IncrementCounter("my-key"));
 
                 var record = sql.Query("select * from Counter").Single();
 
@@ -195,7 +209,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.IncrementCounter("my-key", TimeSpan.FromDays(1)));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.IncrementCounter("my-key", TimeSpan.FromDays(1)));
 
                 var record = sql.Query("select * from Counter").Single();
 
@@ -215,7 +230,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.IncrementCounter("my-key");
                     x.IncrementCounter("my-key");
@@ -232,7 +248,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.DecrementCounter("my-key"));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.DecrementCounter("my-key"));
 
                 var record = sql.Query("select * from Counter").Single();
 
@@ -247,7 +264,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.DecrementCounter("my-key", TimeSpan.FromDays(1)));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.DecrementCounter("my-key", TimeSpan.FromDays(1)));
 
                 var record = sql.Query("select * from Counter").Single();
 
@@ -267,7 +285,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.DecrementCounter("my-key");
                     x.DecrementCounter("my-key");
@@ -284,7 +303,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.AddToSet("my-key", "my-value"));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.AddToSet("my-key", "my-value"));
 
                 var record = sql.Query("select * from `Set`").Single();
 
@@ -299,7 +319,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.AddToSet("my-key", "another-value");
@@ -316,7 +337,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql,redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.AddToSet("my-key", "my-value");
@@ -333,7 +355,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.AddToSet("my-key", "my-value", 3.2));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.AddToSet("my-key", "my-value", 3.2));
 
                 var record = sql.Query("select * from `Set`").Single();
 
@@ -348,7 +371,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.AddToSet("my-key", "my-value", 3.2);
@@ -365,7 +389,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.RemoveFromSet("my-key", "my-value");
@@ -382,7 +407,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.RemoveFromSet("my-key", "different-value");
@@ -399,7 +425,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.AddToSet("my-key", "my-value");
                     x.RemoveFromSet("different-key", "my-value");
@@ -416,7 +443,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.InsertToList("my-key", "my-value"));
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x => x.InsertToList("my-key", "my-value"));
 
                 var record = sql.Query("select * from List").Single();
 
@@ -430,7 +458,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "my-value");
                     x.InsertToList("my-key", "my-value");
@@ -447,7 +476,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "my-value");
                     x.InsertToList("my-key", "my-value");
@@ -465,7 +495,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "my-value");
                     x.RemoveFromList("my-key", "different-value");
@@ -482,7 +513,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "my-value");
                     x.RemoveFromList("different-key", "my-value");
@@ -499,7 +531,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "0");
                     x.InsertToList("my-key", "1");
@@ -521,7 +554,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "0");
                     x.InsertToList("my-key", "1");
@@ -540,7 +574,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "0");
                     x.TrimList("my-key", 1, 100);
@@ -557,7 +592,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "0");
                     x.TrimList("my-key", 1, 0);
@@ -574,7 +610,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x =>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql, redis, x =>
                 {
                     x.InsertToList("my-key", "0");
                     x.TrimList("another-key", 1, 0);
@@ -591,8 +628,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.SetRangeInHash(null, new Dictionary<string, string>())));
+                    () => Commit(sql, redis, x => x.SetRangeInHash(null, new Dictionary<string, string>())));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -603,8 +641,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.SetRangeInHash("some-hash", null)));
+                    () => Commit(sql,redis, x => x.SetRangeInHash("some-hash", null)));
 
                 Assert.Equal("keyValuePairs", exception.ParamName);
             });
@@ -615,7 +654,8 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
-                Commit(sql, x => x.SetRangeInHash("some-hash", new Dictionary<string, string>
+                var redis = ConnectionUtils.CreateRedisConnection();
+                Commit(sql,redis, x => x.SetRangeInHash("some-hash", new Dictionary<string, string>
                 {
                     { "Key1", "Value1" },
                     { "Key2", "Value2" }
@@ -636,8 +676,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.RemoveHash(null)));
+                    () => Commit(sql,redis, x => x.RemoveHash(null)));
             });
         }
 
@@ -646,15 +687,16 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
-                Commit(sql, x => x.SetRangeInHash("some-hash", new Dictionary<string, string>
+                Commit(sql,redis, x => x.SetRangeInHash("some-hash", new Dictionary<string, string>
                 {
                     { "Key1", "Value1" },
                     { "Key2", "Value2" }
                 }));
 
                 // Act
-                Commit(sql, x => x.RemoveHash("some-hash"));
+                Commit(sql,redis, x => x.RemoveHash("some-hash"));
 
                 // Assert
                 var count = sql.Query<int>("select count(*) from Hash").Single();
@@ -667,8 +709,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.AddRangeToSet(null, new List<string>())));
+                    () => Commit(sql,redis, x => x.AddRangeToSet(null, new List<string>())));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -679,8 +722,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.AddRangeToSet("my-set", null)));
+                    () => Commit(sql,redis, x => x.AddRangeToSet("my-set", null)));
 
                 Assert.Equal("items", exception.ParamName);
             });
@@ -691,9 +735,10 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var items = new List<string> { "1", "2", "3" };
 
-                Commit(sql, x => x.AddRangeToSet("my-set", items));
+                Commit(sql, redis, x => x.AddRangeToSet("my-set", items));
 
                 var records = sql.Query<string>(@"select `Value` from `Set` where `Key` = N'my-set'");
                 Assert.Equal(items, records);
@@ -705,8 +750,9 @@ select last_insert_id() as Id";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.RemoveSet(null)));
+                    () => Commit(sql,redis, x => x.RemoveSet(null)));
             });
         }
 
@@ -718,13 +764,14 @@ insert into `Set` (`Key`, `Value`, Score) values (@key, @value, 0.0)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 sql.Execute(arrangeSql, new[]
                 {
                     new { key = "set-1", value = "1" },
                     new { key = "set-2", value = "1" }
                 });
 
-                Commit(sql, x => x.RemoveSet("set-1"));
+                Commit(sql, redis, x => x.RemoveSet("set-1"));
 
                 var record = sql.Query("select * from `Set`").Single();
                 Assert.Equal("set-2", record.Key);
@@ -736,8 +783,10 @@ insert into `Set` (`Key`, `Value`, Score) values (@key, @value, 0.0)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
+
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.ExpireHash(null, TimeSpan.FromMinutes(5))));
+                    () => Commit(sql, redis, x => x.ExpireHash(null, TimeSpan.FromMinutes(5))));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -752,6 +801,7 @@ values (@key, @field)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -760,7 +810,7 @@ values (@key, @field)";
                 });
 
                 // Act
-                Commit(sql, x => x.ExpireHash("hash-1", TimeSpan.FromMinutes(60)));
+                Commit(sql, redis, x => x.ExpireHash("hash-1", TimeSpan.FromMinutes(60)));
 
                 // Assert
                 var records = sql.Query("select * from Hash").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -775,8 +825,9 @@ values (@key, @field)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.ExpireSet(null, TimeSpan.FromSeconds(45))));
+                    () => Commit(sql,redis, x => x.ExpireSet(null, TimeSpan.FromSeconds(45))));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -791,6 +842,7 @@ values (@key, @value, 0.0)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -799,7 +851,7 @@ values (@key, @value, 0.0)";
                 });
 
                 // Act
-                Commit(sql, x => x.ExpireSet("set-1", TimeSpan.FromMinutes(60)));
+                Commit(sql, redis, x => x.ExpireSet("set-1", TimeSpan.FromMinutes(60)));
 
                 // Assert
                 var records = sql.Query("select * from `Set`").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -814,8 +866,9 @@ values (@key, @value, 0.0)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.ExpireList(null, TimeSpan.FromSeconds(45))));
+                    () => Commit(sql, redis, x => x.ExpireList(null, TimeSpan.FromSeconds(45))));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -829,6 +882,7 @@ insert into List (`Key`) values (@key)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -837,7 +891,7 @@ insert into List (`Key`) values (@key)";
                 });
 
                 // Act
-                Commit(sql, x => x.ExpireList("list-1", TimeSpan.FromMinutes(60)));
+                Commit(sql,redis, x => x.ExpireList("list-1", TimeSpan.FromMinutes(60)));
 
                 // Assert
                 var records = sql.Query("select * from List").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -852,8 +906,9 @@ insert into List (`Key`) values (@key)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.PersistHash(null)));
+                    () => Commit(sql,redis, x => x.PersistHash(null)));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -868,6 +923,7 @@ values (@key, @field, @expireAt)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -876,7 +932,7 @@ values (@key, @field, @expireAt)";
                 });
 
                 // Act
-                Commit(sql, x => x.PersistHash("hash-1"));
+                Commit(sql, redis,x => x.PersistHash("hash-1"));
 
                 // Assert
                 var records = sql.Query("select * from Hash").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -890,8 +946,9 @@ values (@key, @field, @expireAt)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.PersistSet(null)));
+                    () => Commit(sql, redis, x => x.PersistSet(null)));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -906,6 +963,7 @@ values (@key, @value, @expireAt, 0.0)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -914,7 +972,7 @@ values (@key, @value, @expireAt, 0.0)";
                 });
 
                 // Act
-                Commit(sql, x => x.PersistSet("set-1"));
+                Commit(sql, redis, x => x.PersistSet("set-1"));
 
                 // Assert
                 var records = sql.Query("select * from `Set`").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -928,8 +986,9 @@ values (@key, @value, @expireAt, 0.0)";
         {
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 var exception = Assert.Throws<ArgumentNullException>(
-                    () => Commit(sql, x => x.PersistList(null)));
+                    () => Commit(sql, redis, x => x.PersistList(null)));
 
                 Assert.Equal("key", exception.ParamName);
             });
@@ -944,6 +1003,7 @@ values (@key, @expireAt)";
 
             UseConnection(sql =>
             {
+                var redis = ConnectionUtils.CreateRedisConnection();
                 // Arrange
                 sql.Execute(arrangeSql, new[]
                 {
@@ -952,7 +1012,7 @@ values (@key, @expireAt)";
                 });
 
                 // Act
-                Commit(sql, x => x.PersistList("list-1"));
+                Commit(sql, redis, x => x.PersistList("list-1"));
 
                 // Assert
                 var records = sql.Query("select * from List").ToDictionary(x => (string)x.Key, x => (DateTime?)x.ExpireAt);
@@ -969,11 +1029,26 @@ values (@key, @expireAt)";
             }
         }
 
+        private static void UseRedisConnection(Action<ConnectionMultiplexer> action)
+        {
+            using (var connection = ConnectionUtils.CreateRedisConnection())
+            {
+                action(connection);
+            }
+        }
+
         private void Commit(
             MySqlConnection connection,
+            ConnectionMultiplexer redisConnection,
             Action<MySqlWriteOnlyTransaction> action)
         {
-            var storage = new Mock<MySqlStorage>(connection, new MySqlStorageOptions());
+            var storage = new Mock<MySqlStorage>(connection, redisConnection, new MySqlStorageOptions
+            {
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true,
+                UseRedisTransactions = true
+            });
             storage.Setup(x => x.QueueProviders).Returns(_queueProviders);
 
             using (var transaction = new MySqlWriteOnlyTransaction(storage.Object, new MySqlStorageOptions()))

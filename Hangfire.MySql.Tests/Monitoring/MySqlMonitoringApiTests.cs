@@ -7,6 +7,7 @@ using Hangfire.MySql.Monitoring;
 using Hangfire.Storage.Monitoring;
 using Moq;
 using MySqlConnector;
+using StackExchange.Redis;
 using Xunit;
 
 namespace Hangfire.MySql.Tests.Monitoring
@@ -17,6 +18,7 @@ namespace Hangfire.MySql.Tests.Monitoring
         private readonly MySqlStorage _storage;
         private readonly int? _jobListLimit = 1000;
         private readonly MySqlConnection _connection;
+        private readonly ConnectionMultiplexer _redis;
         private readonly string _invocationData =
             "{\"Type\":\"System.Console, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089\"," +
             "\"Method\":\"WriteLine\"," +
@@ -31,6 +33,8 @@ namespace Hangfire.MySql.Tests.Monitoring
             _connection = new MySqlConnection(ConnectionUtils.GetConnectionString());
             _connection.Open();
 
+            _redis = ConnectionMultiplexer.Connect(ConnectionUtils.GetRedisConnectionString());
+
             var persistentJobQueueMonitoringApiMock = new Mock<IPersistentJobQueueMonitoringApi>();
             persistentJobQueueMonitoringApiMock.Setup(m => m.GetQueues()).Returns(new[] { "default" });
 
@@ -40,9 +44,12 @@ namespace Hangfire.MySql.Tests.Monitoring
 
             var storageOptions = new MySqlStorageOptions
             {
-                DashboardJobListLimit = _jobListLimit
+                DashboardJobListLimit = _jobListLimit,
+                UseRedisDistributedLock = true,
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
             };
-            var mySqlStorageMock = new Mock<MySqlStorage>(_connection, storageOptions);
+            var mySqlStorageMock = new Mock<MySqlStorage>(_connection, _redis, storageOptions);
             mySqlStorageMock
                 .Setup(m => m.QueueProviders)
                 .Returns(new PersistentJobQueueProviderCollection(defaultProviderMock.Object));

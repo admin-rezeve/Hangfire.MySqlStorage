@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using Dapper;
 using MySqlConnector;
+using StackExchange.Redis;
 using Xunit;
 
 namespace Hangfire.MySql.Tests
@@ -12,15 +13,21 @@ namespace Hangfire.MySql.Tests
         private readonly CountersAggregator _sut;
         private readonly MySqlStorage _storage;
         private readonly MySqlConnection _connection;
+        private readonly ConnectionMultiplexer _redis;
 
         public CountersAggregatorTests()
         {
             var options = new MySqlStorageOptions
             {
-                CountersAggregateInterval = TimeSpan.Zero
+                CountersAggregateInterval = TimeSpan.Zero,
+                RedisConnectionString = ConnectionUtils.GetRedisConnectionString(),
+                RedisPrefix = "test:hangfire",
+                UseRedisDistributedLock = true
+
             };
+            _redis = ConnectionUtils.CreateRedisConnection();
             _connection = ConnectionUtils.CreateConnection();
-            _storage = new MySqlStorage(_connection, options);
+            _storage = new MySqlStorage(_connection, _redis, options);
             _sut = new CountersAggregator(_storage, options);
         }
         public void Dispose()

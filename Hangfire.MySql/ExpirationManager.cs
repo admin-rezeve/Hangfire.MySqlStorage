@@ -4,6 +4,7 @@ using Dapper;
 using Hangfire.Logging;
 using Hangfire.Server;
 using MySqlConnector;
+using StackExchange.Redis;
 
 namespace Hangfire.MySql
 {
@@ -11,7 +12,7 @@ namespace Hangfire.MySql
     {
         private static readonly ILog Logger = LogProvider.GetLogger(typeof(ExpirationManager));
 
-        private static readonly TimeSpan DefaultLockTimeout = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan DefaultLockTimeout = TimeSpan.FromSeconds(60);
         private const string DistributedLockKey = "expirationmanager";
         private static readonly TimeSpan DelayBetweenPasses = TimeSpan.FromSeconds(1);
         private const int NumberOfRecordsInSinglePass = 1000;
@@ -21,17 +22,28 @@ namespace Hangfire.MySql
         private readonly MySqlStorage _storage;
         private readonly MySqlStorageOptions _storageOptions;
 
+        // redis
+        private readonly IDatabase _redisDb;
+        private readonly bool _useRedis = false;
+
         public ExpirationManager(MySqlStorage storage, MySqlStorageOptions storageOptions)
         {
             _storage = storage ?? throw new ArgumentNullException("storage");
             _storageOptions = storageOptions ?? throw new ArgumentNullException(nameof(storageOptions));
 
+            if(_storageOptions.UseRedisDistributedLock && !string.IsNullOrEmpty(_storageOptions.RedisConnectionString))
+            {
+                _useRedis = true;
+                _redisDb = _storage.GetRedisConnection().GetDatabase();
+            }
+
+
             _processedTables = new[]
             {
                 $"{storageOptions.TablesPrefix}AggregatedCounter",
-                //$"{storageOptions.TablesPrefix}Job",
+                $"{storageOptions.TablesPrefix}Job",
                 $"{storageOptions.TablesPrefix}List",
-                //$"{storageOptions.TablesPrefix}Set",
+                $"{storageOptions.TablesPrefix}Set",
                 $"{storageOptions.TablesPrefix}Hash",
             };
         }
@@ -48,30 +60,53 @@ namespace Hangfire.MySql
                 {
                     _storage.UseConnection(connection =>
                     {
+                        var redisDb = _storage.GetRedisConnection().GetDatabase();
                         try
                         {
-                            Logger.DebugFormat("delete from `{0}` where ExpireAt < @now limit @count;", table);
-
-                            using (
-                                new MySqlDistributedLock(
-                                    connection,
-                                    DistributedLockKey,
-                                    DefaultLockTimeout,
-                                    _storageOptions,
-                                    cancellationToken).Acquire())
+                            // Try to acquire Redis lock manually
+                            if (redisDb.LockTake(_storage.GetRedisKey(DistributedLockKey), Environment.MachineName, DefaultLockTimeout))
                             {
-                                removedCount = connection.Execute(
-                                    String.Format(
-                                        "delete from `{0}` where ExpireAt < @now limit @count;", table),
-                                    new { now = DateTime.UtcNow, count = NumberOfRecordsInSinglePass });
+                                try
+                                {
+                                    removedCount = connection.Execute(
+                                        $"DELETE FROM `{table}` WHERE ExpireAt IS NOT NULL AND ExpireAt < @now LIMIT @count",
+                                        new { now = DateTime.UtcNow, count = NumberOfRecordsInSinglePass });
+                                }
+                                finally
+                                {
+                                    redisDb.LockRelease(_storage.GetRedisKey(DistributedLockKey), Environment.MachineName);
+                                }
                             }
-
-                            Logger.DebugFormat("removed records count={0}", removedCount);
                         }
-                        catch (MySqlException ex)
+                        catch (Exception ex)
                         {
-                            Logger.Error(ex.ToString());
+                            Logger.Error($"Failed deleting expired from {table}: {ex.Message}");
                         }
+
+                        //try
+                        //{
+                        //    Logger.DebugFormat("delete from `{0}` where ExpireAt < @now limit @count;", table);
+
+                        //    using (
+                        //        new MySqlDistributedLock(
+                        //            connection,
+                        //            DistributedLockKey,
+                        //            DefaultLockTimeout,
+                        //            _storageOptions,
+                        //            cancellationToken).Acquire())
+                        //    {
+                        //        removedCount = connection.Execute(
+                        //            String.Format(
+                        //                "delete from `{0}` where ExpireAt < @now limit @count;", table),
+                        //            new { now = DateTime.UtcNow, count = NumberOfRecordsInSinglePass });
+                        //    }
+
+                        //    Logger.DebugFormat("removed records count={0}", removedCount);
+                        //}
+                        //catch (MySqlException ex)
+                        //{
+                        //    Logger.Error(ex.ToString());
+                        //}
                     });
 
                     if (removedCount > 0)
