@@ -35,7 +35,6 @@ namespace Hangfire.MySql.JobQueue
             if (fetchedJob == null) throw new ArgumentNullException("fetchedJob");
             if (storageOptions.UseRedisDistributedLock && !string.IsNullOrEmpty(storageOptions.RedisConnectionString))
             {
-                Console.WriteLine(redisDb.ToString());
                 if (redisDb == null) throw new ArgumentNullException("connection");
                 _useRedis = true;
                 _redisDb = redisDb;
